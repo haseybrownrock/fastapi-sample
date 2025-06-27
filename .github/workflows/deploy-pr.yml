@@ -1,0 +1,61 @@
+name: deploy-pr
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - .github/workflows/deploy-pr.yml
+
+env:
+  Registory: ghcr.io
+
+jobs:
+  build-and-push-image:
+    outputs:
+      IMAGE_FULL_NAME: ${{ steps.meta.outputs.tags }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checout repository
+        uses: actions/checkout@v4
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.Registory }}/${{ github.repository }} # ghcr.io/haseybrownrock/fastapi-sample
+
+      - name: Login to GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.Registory }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: app
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels}}
+
+  update-kubernetes-manifest:
+    runs-on: ubuntu-latest
+    needs: [build-and-push-images]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update fastapi-sample image
+        env:
+          IMAGE_FULL_NAME: ${{ needs.build-and-push-image.outputs.IMAGE_FULL_NAME}}
+        run: |
+          yq -i "(.spec.template.spec.containers[] | select(.name == \"fastapi-sample\")).image = \"$IMAGE_FULL_NAME\"" manifests/fastapi-sample/deployment.yaml
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@5
+        with:
+          base: main
+          title: "Update fast-api sample"
+          draft: true
+          body: |
+            # Changes
+            - update `fastapi-sample` image to ${{ needs.build-and-push-image.outputs.IMAGE_FULL_NAME}}
